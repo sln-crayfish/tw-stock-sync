@@ -1,0 +1,52 @@
+# tw-stock-sync
+
+Taiwan listed and OTC daily K-line data sync project.
+
+Historical data is stored in `data/master/kline/{stock_id}.json`. GitHub Actions runs every day at 16:30 Asia/Taipei, fetches the daily close quotes from TWSE and TPEx, and commits updates back into `data/master/`.
+
+## Local Update
+
+Requires Node.js 20 or newer.
+
+```bash
+npm run update:today
+```
+
+The update behavior is:
+
+- Existing stock files are appended or corrected for the latest quote date.
+- If a new stock appears in TWSE / TPEx daily quotes and no JSON file exists yet, a new `data/master/kline/{stock_id}.json` file is created.
+- New stock files start from the first quote date seen by this project. The script does not backfill historical data.
+- Institutional data is not generated.
+
+## GitHub Actions Schedule
+
+The schedule is configured in `.github/workflows/update-daily-kline.yml`:
+
+```yaml
+cron: "30 8 * * *"
+```
+
+GitHub Actions cron uses UTC. `08:30 UTC` is `16:30 Asia/Taipei`.
+
+The workflow:
+
+1. Checks out the repository
+2. Sets up Node.js 20
+3. Runs `npm run update:today`
+4. Commits and pushes changes under `data/master/`
+
+Make sure GitHub Actions can write to the repository:
+
+`Settings` -> `Actions` -> `General` -> `Workflow permissions` -> `Read and write permissions`
+
+## Upload To GitHub
+
+```bash
+git init
+git add .
+git commit -m "initial data sync"
+git branch -M main
+git remote add origin https://github.com/<your-account>/tw-stock-sync.git
+git push -u origin main
+```
