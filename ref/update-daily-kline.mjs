@@ -51,13 +51,24 @@ function writeJson(path, data) {
   writeFileSync(path, JSON.stringify(data), 'utf8')
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, redirectsLeft = 3) {
   const response = await fetch(url, {
+    redirect: 'manual',
     headers: {
       'Accept': 'application/json',
       'User-Agent': 'tw-stock-sync/1.0'
     }
   })
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get('location')
+    if (!location || redirectsLeft <= 0) {
+      throw new Error(`HTTP ${response.status} from ${url}`)
+    }
+
+    const nextUrl = new URL(location, url).toString()
+    return fetchJson(nextUrl, redirectsLeft - 1)
+  }
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`)
@@ -77,7 +88,7 @@ function addQuote(quotes, code, name, candle) {
 }
 
 async function fetchTwseQuotes() {
-  const url = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json'
+  const url = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json'
   const json = await fetchJson(url)
   const date = rocToDate(json.date) ?? rocToDate(json.title)
   const quotes = new Map()
