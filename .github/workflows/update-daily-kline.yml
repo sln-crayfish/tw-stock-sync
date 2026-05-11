@@ -60,14 +60,16 @@ jobs:
             UPDATE_INFO="No update summary was found in the workflow log."
           fi
 
-          MESSAGE="[台股日 K 更新完成]
+          {
+            echo "[台股日 K 更新完成]"
+            echo
+            echo "$UPDATE_INFO"
+            echo "---"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Run: ${RUN_URL}"
+          } > discord-message.txt
 
-${UPDATE_INFO}
----
-Repository: ${GITHUB_REPOSITORY}
-Run: ${RUN_URL}"
-
-          jq -n --arg content "$MESSAGE" '{content: $content}' > discord-payload.json
+          jq -n --rawfile content discord-message.txt '{content: $content}' > discord-payload.json
           curl -sS -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data @discord-payload.json
