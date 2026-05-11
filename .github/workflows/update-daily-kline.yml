@@ -41,3 +41,18 @@ jobs:
           fi
           git commit -m "chore(data): update daily kline"
           git push
+
+      - name: Notify Discord on success
+        if: success()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL is not set; skipping Discord notification."
+            exit 0
+          fi
+
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"content\":\"tw-stock-sync daily K-line update succeeded.\\nRepository: ${GITHUB_REPOSITORY}\\nBranch: ${GITHUB_REF_NAME}\\nRun: ${RUN_URL}\"}"
