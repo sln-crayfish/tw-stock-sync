@@ -28,7 +28,9 @@ jobs:
           node-version: 24
 
       - name: Update today K-line data
-        run: npm run update:today
+        run: |
+          set -o pipefail
+          npm run update:today 2>&1 | tee update.log
 
       - name: Commit and push data changes
         run: |
@@ -53,6 +55,19 @@ jobs:
           fi
 
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          UPDATE_INFO="$(grep -E '^(Quote date|TWSE quotes|TPEx quotes|Total symbols with quotes|Updated|Corrected same date|Unchanged|Created new files|Skipped|Invalid files|No quote):' update.log || true)"
+          if [ -z "$UPDATE_INFO" ]; then
+            UPDATE_INFO="No update summary was found in the workflow log."
+          fi
+
+          MESSAGE="[台股日 K 更新完成]
+
+${UPDATE_INFO}
+---
+Repository: ${GITHUB_REPOSITORY}
+Run: ${RUN_URL}"
+
+          jq -n --arg content "$MESSAGE" '{content: $content}' > discord-payload.json
           curl -sS -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "{\"content\":\"tw-stock-sync daily K-line update succeeded.\\nRepository: ${GITHUB_REPOSITORY}\\nBranch: ${GITHUB_REF_NAME}\\nRun: ${RUN_URL}\"}"
+            --data @discord-payload.json
