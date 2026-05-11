@@ -51,14 +51,29 @@ function writeJson(path, data) {
   writeFileSync(path, JSON.stringify(data), 'utf8')
 }
 
-async function fetchJson(url, redirectsLeft = 3) {
-  const response = await fetch(url, {
-    redirect: 'manual',
-    headers: {
-      'Accept': 'application/json',
-      'User-Agent': 'tw-stock-sync/1.0'
-    }
-  })
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function fetchJsonOnce(url, redirectsLeft = 3) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
+
+  let response
+  try {
+    response = await fetch(url, {
+      redirect: 'manual',
+      signal: controller.signal,
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (compatible; tw-stock-sync/1.0; +https://github.com/sln-crayfish/tw-stock-sync)'
+      }
+    })
+  } finally {
+    clearTimeout(timeout)
+  }
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get('location')
@@ -67,7 +82,7 @@ async function fetchJson(url, redirectsLeft = 3) {
     }
 
     const nextUrl = new URL(location, url).toString()
-    return fetchJson(nextUrl, redirectsLeft - 1)
+    return fetchJsonOnce(nextUrl, redirectsLeft - 1)
   }
 
   if (!response.ok) {
@@ -75,6 +90,24 @@ async function fetchJson(url, redirectsLeft = 3) {
   }
 
   return response.json()
+}
+
+async function fetchJson(url, label) {
+  const attempts = 4
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fetchJsonOnce(url)
+    } catch (error) {
+      if (attempt === attempts) {
+        throw new Error(`${label} fetch failed after ${attempts} attempts: ${error.message}`)
+      }
+
+      const wait = attempt * 3000
+      console.log(`${label} fetch attempt ${attempt} failed: ${error.message}; retrying in ${wait / 1000}s...`)
+      await sleep(wait)
+    }
+  }
 }
 
 function addQuote(quotes, code, name, candle) {
@@ -89,7 +122,7 @@ function addQuote(quotes, code, name, candle) {
 
 async function fetchTwseQuotes() {
   const url = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json'
-  const json = await fetchJson(url)
+  const json = await fetchJson(url, 'TWSE')
   const date = rocToDate(json.date) ?? rocToDate(json.title)
   const quotes = new Map()
 
@@ -121,7 +154,7 @@ async function fetchTwseQuotes() {
 async function fetchTpexQuotes(date) {
   const rocDate = adToRocDate(date)
   const url = `https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d=${encodeURIComponent(rocDate)}&type=0&response=json`
-  const json = await fetchJson(url)
+  const json = await fetchJson(url, 'TPEx')
   const responseDate = rocToDate(json.date) ?? rocToDate(json.title)
   const quotes = new Map()
 
