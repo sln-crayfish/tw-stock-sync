@@ -4,8 +4,6 @@ on:
   schedule:
     # GitHub Actions cron uses UTC. 08:30 UTC = 16:30 Asia/Taipei.
     - cron: "30 8 * * *"
-    # Temporary schedule trigger test. Remove after schedule delivery is verified.
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
