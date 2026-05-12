@@ -4,9 +4,8 @@ on:
   schedule:
     # GitHub Actions cron uses UTC. 08:30 UTC = 16:30 Asia/Taipei.
     - cron: "30 8 * * *"
-    # Backup schedules in case GitHub drops or delays the first scheduled event.
-    - cron: "45 8 * * *"
-    - cron: "0 9 * * *"
+    # Temporary schedule trigger test: 2026-05-12 18:52 Asia/Taipei.
+    - cron: "52 10 * * *"
   workflow_dispatch:
 
 permissions:
