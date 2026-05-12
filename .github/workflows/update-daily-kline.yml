@@ -2,8 +2,13 @@ name: Update daily K-line data
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC. 08:30 UTC = 16:30 Asia/Taipei.
-    - cron: "30 8 * * *"
+    # GitHub Actions cron uses UTC.
+    # 08:35 UTC = 16:35 Asia/Taipei.
+    - cron: "35 8 * * *"
+    # 08:52 UTC = 16:52 Asia/Taipei.
+    - cron: "52 8 * * *"
+    # 09:16 UTC = 17:16 Asia/Taipei.
+    - cron: "16 9 * * *"
   workflow_dispatch:
 
 permissions:
