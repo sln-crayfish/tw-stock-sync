@@ -11,16 +11,11 @@
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 const KLINE_DIR = join(ROOT, 'data', 'master', 'kline')
-
-function adToRocDate(date) {
-  const [year, month, day] = date.split('-').map(Number)
-  return `${year - 1911}/${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}`
-}
 
 function parseNumber(value) {
   const text = String(value ?? '').replace(/,/g, '').trim()
@@ -55,7 +50,7 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function fetchJsonOnce(url, redirectsLeft = 3) {
+async function fetchOnce(url, parse, redirectsLeft = 3) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30000)
 
@@ -65,7 +60,7 @@ async function fetchJsonOnce(url, redirectsLeft = 3) {
       redirect: 'manual',
       signal: controller.signal,
       headers: {
-        'Accept': 'application/json',
+        'Accept': 'application/json, text/csv;q=0.9, */*;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
         'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
         'User-Agent': 'Mozilla/5.0 (compatible; tw-stock-sync/1.0; +https://github.com/sln-crayfish/tw-stock-sync)'
@@ -82,22 +77,22 @@ async function fetchJsonOnce(url, redirectsLeft = 3) {
     }
 
     const nextUrl = new URL(location, url).toString()
-    return fetchJsonOnce(nextUrl, redirectsLeft - 1)
+    return fetchOnce(nextUrl, parse, redirectsLeft - 1)
   }
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`)
   }
 
-  return response.json()
+  return parse(response)
 }
 
-async function fetchJson(url, label) {
+async function fetchWithRetry(url, label, parse) {
   const attempts = 4
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await fetchJsonOnce(url)
+      return await fetchOnce(url, parse)
     } catch (error) {
       if (attempt === attempts) {
         throw new Error(`${label} fetch failed after ${attempts} attempts: ${error.message}`)
@@ -108,6 +103,52 @@ async function fetchJson(url, label) {
       await sleep(wait)
     }
   }
+}
+
+function fetchJson(url, label) {
+  return fetchWithRetry(url, label, response => response.json())
+}
+
+function fetchCsv(url, label) {
+  return fetchWithRetry(url, label, response => response.text())
+}
+
+// Minimal RFC-4180-style parser for a single CSV line. TWSE quotes every field,
+// so this also handles the rare case of a comma inside a quoted value.
+function parseCsvLine(line) {
+  const fields = []
+  let field = ''
+  let inQuotes = false
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (line[i + 1] === '"') {
+          field += '"'
+          i += 1
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += char
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inQuotes = true
+    } else if (char === ',') {
+      fields.push(field)
+      field = ''
+    } else {
+      field += char
+    }
+  }
+
+  fields.push(field)
+  return fields
 }
 
 function addQuote(quotes, code, name, candle) {
@@ -121,27 +162,38 @@ function addQuote(quotes, code, name, candle) {
 }
 
 async function fetchTwseQuotes() {
-  const url = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json'
-  const json = await fetchJson(url, 'TWSE')
-  const date = rocToDate(json.date) ?? rocToDate(json.title)
+  // The legacy rwd JSON variant was retired; this endpoint now only serves CSV.
+  // Columns: 日期, 證券代號, 證券名稱, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數
+  const url = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=csv'
+  const csv = await fetchCsv(url, 'TWSE')
+  const rows = csv.split('\n').map(line => line.replace(/\r$/, '')).filter(line => line.trim() !== '')
   const quotes = new Map()
+  let date = null
+
+  // Row 0 is the header.
+  for (let i = 1; i < rows.length; i++) {
+    const cols = parseCsvLine(rows[i])
+    if (cols.length < 9) continue
+
+    const rowDate = rocToDate(cols[0])
+    if (!rowDate) continue
+    if (!date) date = rowDate
+
+    const code = cols[1].trim()
+    const close = parseNumber(cols[8])
+
+    addQuote(quotes, code, cols[2], {
+      date: rowDate,
+      open: parseNumber(cols[5]) || close,
+      high: parseNumber(cols[6]) || close,
+      low: parseNumber(cols[7]) || close,
+      close,
+      volume: Math.round(parseNumber(cols[3]) / 1000)
+    })
+  }
 
   if (!date) {
     throw new Error('TWSE did not return a valid quote date.')
-  }
-
-  for (const row of json.data ?? []) {
-    const code = String(row[0] ?? '').trim()
-    const close = parseNumber(row[7])
-
-    addQuote(quotes, code, row[1], {
-      date,
-      open: parseNumber(row[4]) || close,
-      high: parseNumber(row[5]) || close,
-      low: parseNumber(row[6]) || close,
-      close,
-      volume: Math.round(parseNumber(row[2]) / 1000)
-    })
   }
 
   if (quotes.size === 0) {
@@ -151,29 +203,39 @@ async function fetchTwseQuotes() {
   return { date, quotes }
 }
 
-async function fetchTpexQuotes(date) {
-  const rocDate = adToRocDate(date)
-  const url = `https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d=${encodeURIComponent(rocDate)}&type=0&response=json`
+async function fetchTpexQuotes() {
+  // The legacy stk_quote_result.php endpoint was retired; use the OpenAPI feed,
+  // which returns the latest trading day for the OTC main board.
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
   const json = await fetchJson(url, 'TPEx')
-  const responseDate = rocToDate(json.date) ?? rocToDate(json.title)
-  const quotes = new Map()
 
-  if (responseDate && responseDate !== date) {
-    throw new Error(`TPEx returned quote date ${responseDate}, expected ${date}.`)
+  if (!Array.isArray(json)) {
+    throw new Error('TPEx returned an unexpected payload shape.')
   }
 
-  for (const row of json.tables?.[0]?.data ?? []) {
-    const code = String(row[0] ?? '').trim()
-    const close = parseNumber(row[2])
+  const quotes = new Map()
+  let date = null
 
-    addQuote(quotes, code, row[1], {
-      date: responseDate ?? date,
-      open: parseNumber(row[4]) || close,
-      high: parseNumber(row[5]) || close,
-      low: parseNumber(row[6]) || close,
+  for (const row of json) {
+    const rowDate = rocToDate(row.Date)
+    if (!rowDate) continue
+    if (!date) date = rowDate
+
+    const code = String(row.SecuritiesCompanyCode ?? '').trim()
+    const close = parseNumber(row.Close)
+
+    addQuote(quotes, code, row.CompanyName, {
+      date: rowDate,
+      open: parseNumber(row.Open) || close,
+      high: parseNumber(row.High) || close,
+      low: parseNumber(row.Low) || close,
       close,
-      volume: Math.round(parseNumber(row[8]) / 1000)
+      volume: Math.round(parseNumber(row.TradingShares) / 1000)
     })
+  }
+
+  if (!date) {
+    throw new Error('TPEx did not return a valid quote date.')
   }
 
   if (quotes.size === 0) {
@@ -185,10 +247,18 @@ async function fetchTpexQuotes(date) {
 
 async function fetchDailyQuotes() {
   const twse = await fetchTwseQuotes()
-  const tpex = await fetchTpexQuotes(twse.date)
+  const tpex = await fetchTpexQuotes()
+
+  // TWSE and TPEx publish independently and may be a trading day apart near the
+  // update window. Each candle is stored under its own source date, so a mismatch
+  // is not an error; surface it for visibility only.
+  if (twse.date !== tpex.date) {
+    console.log(`Note: TWSE quote date ${twse.date} differs from TPEx ${tpex.date}; each candle is stored under its own source date.`)
+  }
 
   return {
     date: twse.date,
+    tpexDate: tpex.date,
     quotes: new Map([...twse.quotes, ...tpex.quotes]),
     sourceCounts: {
       twse: twse.quotes.size,
@@ -307,7 +377,7 @@ async function main() {
     }
   }
 
-  console.log(`Quote date: ${quoteDate}`)
+  console.log(`Quote date: ${quoteDate}${daily.tpexDate && daily.tpexDate !== quoteDate ? ` (TPEx ${daily.tpexDate})` : ''}`)
   console.log(`TWSE quotes: ${sourceCounts.twse}`)
   console.log(`TPEx quotes: ${sourceCounts.tpex}`)
   console.log(`Total symbols with quotes: ${quotes.size}`)
@@ -328,7 +398,11 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error(error.message)
-  process.exit(1)
-})
+export { fetchTwseQuotes, fetchTpexQuotes, fetchDailyQuotes, updateKlineFile, parseCsvLine }
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(error.message)
+    process.exit(1)
+  })
+}
